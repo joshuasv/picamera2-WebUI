@@ -107,7 +107,11 @@ class CameraObject:
         # Default controls for the Camera
         self.settings = self.camera.camera_controls
         # Lists all sensor modes
-        self.sensor_modes = self.camera.sensor_modes
+        try:
+            self.sensor_modes = self.camera.sensor_modes
+        except OSError as e:
+            logging.warning(f"Some modes could not be lodaded: {e}")
+            self.sensor_modes = self.camera.sensor_modes
         # Using the output from sensor_modes generate a list of available resolutions
         self.output_resolutions = self.available_resolutions()
         
