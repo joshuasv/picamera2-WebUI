@@ -3,6 +3,7 @@ from datetime import datetime
 from threading import Condition
 import threading
 import argparse
+import subprocess
 
 
 from flask import Flask, render_template, request, jsonify, Response, send_file, abort
@@ -15,6 +16,7 @@ from picamera2.encoders import MJPEGEncoder
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput
 from libcamera import Transform, controls
+from picamera2.outputs import FfmpegOutput
 
 # Init Flask
 app = Flask(__name__)
@@ -113,6 +115,7 @@ class CameraObject:
         
 
 
+        self.video_encoder = None
         self.output = None
         # need an if statment for checking if there is config or load a default template for now this is ok cause config is assumed        
         #self.saved_config = self.load_settings_from_file(camera_info['Config_Location'])
@@ -169,6 +172,53 @@ class CameraObject:
         except Exception as e:
             logging.error(f"Error capturing image: {e}")
 
+    def start_encoder(self):
+        try:
+            self.video_encoder = H264Encoder(10000000)
+            timestamp = int(datetime.timestamp(datetime.now()))
+            video_name = f'pvideo_{timestamp}'
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], video_name + ".mp4")
+            self.curr_video_fpath = filepath
+            self.camera.start_encoder(self.video_encoder, filepath)
+            time.sleep(1)
+            logging.info(f"Video start recording successfully. Path: {filepath}")
+        except Exception as e:
+            logging.error(f"Error capturing video: {e}")
+    
+    def stop_encoder(self):
+        try:
+            self.camera.stop_encoder(self.video_encoder)
+            self.video_encoder = None
+            time.sleep(1)
+            # Videos come out corrupted, do not know why
+            extension = os.path.splitext(self.curr_video_fpath)[1]
+            tmp_fpath = os.path.join(app.config['UPLOAD_FOLDER'], f"tmp.{extension}")
+            command = [
+                'ffmpeg',
+                '-i', self.curr_video_fpath,
+                '-c', 'copy',
+                '-map', '0',
+                tmp_fpath
+            ]
+            # Run the FFmpeg command
+            logging.info("Repairing video.")
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode == 0:
+                logging.info(f"Video repaired successfully.")
+                command = [
+                    "mv", tmp_fpath, self.curr_video_fpath
+                ]
+                result = subprocess.run(command, capture_output=True, text=True)
+                if result.returncode == 0:
+                    logging.info(f"Video renamed successfully.")
+                    logging.info(f"Video stopped recording successfully.")
+                else:
+                    logging.info(f"Error renaming file: {result.stderr}")
+            else:
+                logging.info(f"Error repairing file: {result.stderr}")
+        except Exception as e:
+            logging.error(f"Error stopping video: {e}")
+
     def start_streaming(self):
         self.output = StreamingOutput()
         self.camera.start_recording(MJPEGEncoder(), output=FileOutput(self.output))
@@ -181,7 +231,6 @@ class CameraObject:
         with open(os.path.join(CAMERA_CONFIG_FOLDER ,config_location), 'r') as file:
             return json.load(file)
         
-
     def update_settings(self, new_settings):
         self.settings.update(new_settings)
 
@@ -605,6 +654,24 @@ def capture_photo(camera_num):
         camera.take_photo()  # Call your take_photo function
         time.sleep(1)
         return jsonify(success=True, message="Photo captured successfully")
+    except Exception as e:
+        return jsonify(success=False, message=str(e))
+
+@app.route('/start_capture_video_<int:camera_num>', methods=['POST'])
+def start_video_capture(camera_num):
+    try:
+        camera = cameras.get(camera_num)
+        camera.start_encoder()
+        return jsonify(success=True, message="Video recording...")
+    except Exception as e:
+        return jsonify(success=False, message=str(e))
+
+@app.route('/stop_capture_video_<int:camera_num>', methods=['POST'])
+def stop_video_capture(camera_num):
+    try:
+        camera = cameras.get(camera_num)
+        camera.stop_encoder()
+        return jsonify(success=True, message="Video recording stop.")
     except Exception as e:
         return jsonify(success=False, message=str(e))
 
